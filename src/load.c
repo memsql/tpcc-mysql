@@ -8,6 +8,7 @@
  * +==================================================================
  */
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -42,19 +43,67 @@ int             i;
 int             option_debug = 0;	/* 1 if generating debug output    */
 int             is_local = 1;           /* "1" mean local */
 
+struct psv_dump
+{
+    FILE*   dump_to;
+    int     len;
+    int     marker;
+};
+
 #define DB_STRING_MAX 51
 
 #include "parse_port.h"
 
-int
-try_stmt_execute(MYSQL_STMT *mysql_stmt)
+void
+pipe_separated_values(
+    FILE* progress, // outputs file names of completed output files
+    struct psv_dump* dump,
+    char* load_kind, // kind of load occuring
+    char* format,
+    ...)
 {
-    int ret = mysql_stmt_execute(mysql_stmt);
-    if (ret) {
-        printf("\n%d, %s, %s\n", mysql_errno(mysql), mysql_sqlstate(mysql), mysql_error(mysql) );
-        mysql_rollback(mysql);
+    if (dump->dump_to == NULL)
+    {
+        // only should happen on first invocation
+        char fileNameBuffer[128];
+        sprintf(&fileNameBuffer[0], "./%s.%.5d.%.5d",load_kind, min_ware, dump->marker);
+        dump->dump_to = fopen(&fileNameBuffer[0], "w");
+        fprintf("Failed? %p", dump->dump_to);
     }
-    return ret;
+
+    va_list args;
+    va_start(args, format);
+    dump->len += vfprintf(dump->dump_to, format, args);
+
+    if (dump->len > (20 * (1<<20))) // 20MB
+    {
+        // we have filled the current output file, so close it, emit its
+        // name to the progress file, and open the next file moving marker
+        // forward.
+        char fileNameBuffer[128];
+        sprintf(&fileNameBuffer[0], "./%s.%.5d.%.5d", load_kind, min_ware, dump->marker);
+
+        fclose(dump->dump_to);
+        fprintf(progress, "%s\n", &fileNameBuffer[0]);
+
+        dump->marker++;
+        sprintf(&fileNameBuffer[0], "./%s.%.5d.%.5d", load_kind, min_ware, dump->marker);
+        dump->dump_to = fopen(&fileNameBuffer[0], "w");
+
+        dump->len = 0;
+    }
+}
+
+void
+pipe_separated_finish(FILE* progress, struct psv_dump* dump, const char* load_kind)
+{
+    if (NULL != dump->dump_to)
+    {
+        fclose(dump->dump_to);
+        char fileNameBuffer[128];
+        sprintf(&fileNameBuffer, "%s.%.5d.%.5d", load_kind, min_ware, dump->marker);
+        fprintf(progress, "%s\n", fileNameBuffer);
+    }
 }
 
 /*
@@ -68,13 +117,13 @@ main(argc, argv)
 	char           *argv[];
 {
 	char            arg[2];
-        char           *ptr;
+    char           *ptr;
 
 	char           connect_string[DB_STRING_MAX];
 	char           db_string[DB_STRING_MAX];
 	char	       db_user[DB_STRING_MAX];
 	char	       db_password[DB_STRING_MAX];
-        int            port= 3306;
+    int            port= 3306;
 
 	int i,c;
 
@@ -89,24 +138,8 @@ main(argc, argv)
 
   /* Parse args */
 
-    while ( (c = getopt(argc, argv, "h:P:d:u:p:w:l:m:n:")) != -1) {
+    while ( (c = getopt(argc, argv, "w:l:m:n:")) != -1) {
         switch (c) {
-        case 'h':
-            printf ("option h with value '%s'\n", optarg);
-            strncpy(connect_string, optarg, DB_STRING_MAX);
-            break;
-        case 'd':
-            printf ("option d with value '%s'\n", optarg);
-            strncpy(db_string, optarg, DB_STRING_MAX);
-            break;
-        case 'u':
-            printf ("option u with value '%s'\n", optarg);
-            strncpy(db_user, optarg, DB_STRING_MAX);
-            break;
-        case 'p':
-            printf ("option p with value '%s'\n", optarg);
-            strncpy(db_password, optarg, DB_STRING_MAX);
-            break;
         case 'w':
             printf ("option w with value '%s'\n", optarg);
             count_ware = atoi(optarg);
@@ -124,12 +157,8 @@ main(argc, argv)
             printf ("option n with value '%s'\n", optarg);
             max_ware = atoi(optarg);
             break;
-        case 'P':
-            printf ("option P with value '%s'\n", optarg);
-            port = atoi(optarg);
-            break;
         case '?':
-    	    printf("Usage: tpcc_load -h server_host -P port -d database_name -u mysql_user -p mysql_password -w warehouses -l part -m min_wh -n max_wh\n");
+    	    printf("Usage: tpcc_load -w warehouses -l part -m min_wh -n max_wh\n");
     	    printf("* [part]: 1=ITEMS 2=WAREHOUSE 3=CUSTOMER 4=ORDERS\n");
             exit(0);
         default:
@@ -189,69 +218,6 @@ main(argc, argv)
 	/* Initialize timestamp (for date columns) */
 	gettimestamp(timestamp, STRFTIME_FORMAT, TIMESTAMP_LEN);
 
-	/* EXEC SQL WHENEVER SQLERROR GOTO Error_SqlCall; */
-
-	mysql = mysql_init(NULL);
-	if(!mysql) goto Error_SqlCall;
-
-	if(is_local==1){
-	    /* exec sql connect :connect_string; */
-	    resp = mysql_real_connect(mysql, "localhost", db_user, db_password, db_string, port, NULL, 0);
-	}else{
-	    /* exec sql connect :connect_string USING :db_string; */
-	    resp = mysql_real_connect(mysql, connect_string, db_user, db_password, db_string, port, NULL, 0);
-	}
-
-	if(resp) {
-	    mysql_autocommit(mysql, 0);
-	    mysql_query(mysql, "SET UNIQUE_CHECKS=0");
-	    mysql_query(mysql, "SET FOREIGN_KEY_CHECKS=0");
-	} else {
-	    goto Error_SqlCall_close;
-	}
-
-	for( i=0; i<11; i++ ){
-	    stmt[i] = mysql_stmt_init(mysql);
-	    if(!stmt[i]) goto Error_SqlCall_close;
-	}
-
-	if( mysql_stmt_prepare(stmt[0],
-			       "INSERT INTO item values(?,?,?,?,?)",
-			       34) ) goto Error_SqlCall_close;
-	if( mysql_stmt_prepare(stmt[1],
-			       "INSERT INTO warehouse values(?,?,?,?,?,?,?,?,?)",
-			       47) ) goto Error_SqlCall_close;
-	if( mysql_stmt_prepare(stmt[2],
-			       "INSERT INTO stock values(?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,?)",
-			       59) ) goto Error_SqlCall_close;
-	if( mysql_stmt_prepare(stmt[3],
-			       "INSERT INTO district values(?,?,?,?,?,?,?,?,?,?,?)",
-			       50) ) goto Error_SqlCall_close;
-	if( mysql_stmt_prepare(stmt[4],
-			       "INSERT INTO customer values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 10.0, 1, 0,?)",
-			       76) ) goto Error_SqlCall_close;
-	if( mysql_stmt_prepare(stmt[5],
-			       "INSERT INTO history values(?,?,?,?,?,?,?,?)",
-			       43) ) goto Error_SqlCall_close;
-	if( mysql_stmt_prepare(stmt[6],
-			       "INSERT INTO orders values(?,?,?,?,?,NULL,?, 1)",
-			       46) ) goto Error_SqlCall_close;
-	if( mysql_stmt_prepare(stmt[7],
-			       "INSERT INTO new_orders values(?,?,?)",
-			       36) ) goto Error_SqlCall_close;
-	if( mysql_stmt_prepare(stmt[8],
-			       "INSERT INTO orders values(?,?,?,?,?,?,?, 1)",
-			       43) ) goto Error_SqlCall_close;
-	if( mysql_stmt_prepare(stmt[9],
-			       "INSERT INTO order_line values(?,?,?,?,?,?, NULL,?,?,?)",
-			       54) ) goto Error_SqlCall_close;
-	if( mysql_stmt_prepare(stmt[10],
-			       "INSERT INTO order_line values(?,?,?,?,?,?,?,?,?,?)",
-			       50) ) goto Error_SqlCall_close;
-
-
-	/* exec sql begin transaction; */
-
 	printf("TPCC Data Load Started...\n");
 
 	if(particle_flg==0){
@@ -281,15 +247,7 @@ main(argc, argv)
 
 	/* EXEC SQL COMMIT WORK; */
 
-	if( mysql_commit(mysql) ) goto Error_SqlCall;
-
-	for( i=0; i<11; i++ ){
-	    mysql_stmt_close(stmt[i]);
-	}
-
 	/* EXEC SQL DISCONNECT; */
-
-	mysql_close(mysql);
 
 	printf("\n...DATA LOADING COMPLETED SUCCESSFULLY.\n");
 	exit(0);
@@ -310,7 +268,7 @@ LoadItems()
 
 	int             i_id;
 	int             i_im_id;
-        char            i_name[25];
+    char            i_name[25];
 	float           i_price;
 	char            i_data[51];
 
@@ -320,7 +278,7 @@ LoadItems()
 	int             i;
     int             retried = 0;
 
-	MYSQL_BIND    param[5];
+    struct psv_dump dump = {0};
 
 	/* EXEC SQL WHENEVER SQLERROR GOTO sqlerr; */
 
@@ -342,8 +300,7 @@ retry:
 
 		/* Generate Item Data */
 		i_im_id = RandomNumber(1L, 10000L);
-
-                i_name[ MakeAlphaString(14, 24, i_name) ] = 0;
+        i_name[ MakeAlphaString(14, 24, i_name) ] = 0;
 
 		i_price = ((int) RandomNumber(100L, 10000L)) / 100.0;
 
@@ -362,8 +319,10 @@ retry:
 			i_data[pos + 7] = 'l';
 		}
 		if (option_debug)
+        {
 			printf("IID = %ld, Name= %16s, Price = %5.2f\n",
 			       i_id, i_name, i_price);
+        }
 
 #if 0
 		printf("about to exec sql\n");
@@ -374,21 +333,12 @@ retry:
 		                item
 		                values(:i_id,:i_im_id,:i_name,:i_price,:i_data); */
 
-		memset(param, 0, sizeof(MYSQL_BIND) * 5); /* initialize */
-		param[0].buffer_type = MYSQL_TYPE_LONG;
-		param[0].buffer = &i_id;
-		param[1].buffer_type = MYSQL_TYPE_LONG;
-		param[1].buffer = &i_im_id;
-		param[2].buffer_type = MYSQL_TYPE_STRING;
-		param[2].buffer = i_name;
-		param[2].buffer_length = strlen(i_name);
-		param[3].buffer_type = MYSQL_TYPE_FLOAT;
-		param[3].buffer = &i_price;
-		param[4].buffer_type = MYSQL_TYPE_STRING;
-		param[4].buffer = i_data;
-		param[4].buffer_length = strlen(i_data);
-		if( mysql_stmt_bind_param(stmt[0], param) ) goto sqlerr;
-		if( try_stmt_execute(stmt[0]) ) goto retry;
+        pipe_separated_values(stderr, &dump, "item", "%d|%d|%s|%f|%s|\n",
+            i_id,
+            i_im_id,
+            i_name,
+            i_price,
+            i_data);
 
 #if 0
 		printf("done executing sql\n");
@@ -404,10 +354,8 @@ retry:
 		}
 	}
 
-	/* EXEC SQL COMMIT WORK; */
-	if( mysql_commit(mysql) ) goto sqlerr;
-
 	printf("Item Done. \n");
+    pipe_separated_finish(stderr, &dump, "item");
 	return;
 sqlerr:
 	Error(stmt[0]);
@@ -424,19 +372,24 @@ LoadWare()
 {
 
 	int             w_id;
-        char            w_name[11];
-        char            w_street_1[21];
-        char            w_street_2[21];
-        char            w_city[21];
-        char            w_state[3];
-        char            w_zip[10];
+    char            w_name[11];
+    char            w_street_1[21];
+    char            w_street_2[21];
+    char            w_city[21];
+    char            w_state[3];
+    char            w_zip[10];
 	float           w_tax;
 	float           w_ytd;
 
 	int             tmp;
     int             retried = 0;
 
-	MYSQL_BIND    param[9];
+    struct psv_dump w_dump = {0};
+    struct psv_dump d_dump = {0};
+    struct psv_dump s_dump = {0};
+    FILE* dumping_to = NULL;
+    int dump_len = 0;
+    int dump_marker = 0;
 
 	/* EXEC SQL WHENEVER SQLERROR GOTO sqlerr; */
 
@@ -467,44 +420,28 @@ retry:
 				       :w_street_1,:w_street_2,:w_city,:w_state,
 				       :w_zip,:w_tax,:w_ytd);*/
 
-		memset(param, 0, sizeof(MYSQL_BIND) * 9); /* initialize */
-		param[0].buffer_type = MYSQL_TYPE_LONG;
-		param[0].buffer = &w_id;
-		param[1].buffer_type = MYSQL_TYPE_STRING;
-		param[1].buffer = w_name;
-		param[1].buffer_length = strlen(w_name);
-		param[2].buffer_type = MYSQL_TYPE_STRING;
-		param[2].buffer = w_street_1;
-		param[2].buffer_length = strlen(w_street_1);
-		param[3].buffer_type = MYSQL_TYPE_STRING;
-		param[3].buffer = w_street_2;
-		param[3].buffer_length = strlen(w_street_2);
-		param[4].buffer_type = MYSQL_TYPE_STRING;
-		param[4].buffer = w_city;
-		param[4].buffer_length = strlen(w_city);
-		param[5].buffer_type = MYSQL_TYPE_STRING;
-		param[5].buffer = w_state;
-		param[5].buffer_length = strlen(w_state);
-		param[6].buffer_type = MYSQL_TYPE_STRING;
-		param[6].buffer = w_zip;
-		param[6].buffer_length = strlen(w_zip);
-		param[7].buffer_type = MYSQL_TYPE_FLOAT;
-		param[7].buffer = &w_tax;
-		param[8].buffer_type = MYSQL_TYPE_FLOAT;
-		param[8].buffer = &w_ytd;
-		if( mysql_stmt_bind_param(stmt[1], param) ) goto sqlerr;
-		if( try_stmt_execute(stmt[1]) ) goto retry;
+        pipe_separated_values(stderr, &w_dump, "warehouse", "%d|%s|%s|%s|%s|%s|%s|%f|%f|\n",
+            w_id,
+            w_name,
+            w_street_1,
+            w_street_2,
+            w_city,
+            w_state,
+            w_zip,
+            w_tax,
+            w_ytd);
 
 		/** Make Rows associated with Warehouse **/
-		if( Stock(w_id) ) goto retry;
-		if( District(w_id) ) goto retry;
-
-		/* EXEC SQL COMMIT WORK; */
-		if( mysql_commit(mysql) ) goto sqlerr;
+		if( Stock(w_id, &s_dump) ) goto retry;
+		if( District(w_id, &d_dump) ) goto retry;
 
 	}
+    
+    pipe_separated_finish(stderr, &w_dump, "warehouse");
+    pipe_separated_finish(stderr, &s_dump, "stock");
+    pipe_separated_finish(stderr, &d_dump, "district");
 
-	return;
+    return;
 sqlerr:
 	Error(0);
 }
@@ -521,19 +458,19 @@ LoadCust()
 
 	int             w_id;
 	int             d_id;
+    
+    struct psv_dump c_dump = {0};
+    struct psv_dump h_dump = {0};
 
 	/* EXEC SQL WHENEVER SQLERROR GOTO sqlerr; */
 
 	for (w_id = min_ware; w_id <= max_ware; w_id++)
 		for (d_id = 1L; d_id <= DIST_PER_WARE; d_id++)
-			Customer(d_id, w_id);
+			Customer(d_id, w_id, &c_dump, &h_dump);
 
-	/* EXEC SQL COMMIT WORK;*/	/* Just in case */
-	if( mysql_commit(mysql) ) goto sqlerr;
-
+    pipe_separated_finish(stderr, &c_dump, "customer");
+    pipe_separated_finish(stderr, &h_dump, "history");
 	return;
-sqlerr:
-	Error(0);
 }
 
 /*
@@ -551,15 +488,19 @@ LoadOrd()
 	int             d_id;
 	float           d_tax;
 
+    struct psv_dump o_dump = {0};
+    struct psv_dump n_dump = {0};
+    struct psv_dump ol_dump = {0};
+
 	/* EXEC SQL WHENEVER SQLERROR GOTO sqlerr;*/
 
 	for (w_id = min_ware; w_id <= max_ware; w_id++)
 		for (d_id = 1L; d_id <= DIST_PER_WARE; d_id++)
-			Orders(d_id, w_id);
+			Orders(d_id, w_id, &o_dump, &n_dump, &ol_dump);
 
-	/* EXEC SQL COMMIT WORK; */	/* Just in case */
-	if( mysql_commit(mysql) ) goto sqlerr;
-
+    pipe_separated_finish(stderr, &o_dump, "orders");
+    pipe_separated_finish(stderr, &n_dump, "new_orders");
+    pipe_separated_finish(stderr, &ol_dump, "order_line");
 	return;
 sqlerr:
 	Error(0);
@@ -572,8 +513,9 @@ sqlerr:
  * +==================================================================
  */
 int 
-Stock(w_id)
+Stock(w_id, s_dump)
 	int             w_id;
+    struct psv_dump* s_dump;
 {
 
 	int             s_i_id;
@@ -597,8 +539,6 @@ Stock(w_id)
 	int             pos;
 	int             i;
     int             error;
-
-	MYSQL_BIND    param[14];
 
 	/* EXEC SQL WHENEVER SQLERROR GOTO sqlerr;*/
 	printf("Loading Stock Wid=%ld\n", w_id);
@@ -652,48 +592,21 @@ retry:
 				       :s_dist_06,:s_dist_07,:s_dist_08,:s_dist_09,:s_dist_10,
 				       0, 0, 0,:s_data);*/
 
-		memset(param, 0, sizeof(MYSQL_BIND) * 14); /* initialize */
-		param[0].buffer_type = MYSQL_TYPE_LONG;
-		param[0].buffer = &s_i_id;
-		param[1].buffer_type = MYSQL_TYPE_LONG;
-		param[1].buffer = &s_w_id;
-		param[2].buffer_type = MYSQL_TYPE_LONG;
-		param[2].buffer = &s_quantity;
-		param[3].buffer_type = MYSQL_TYPE_STRING;
-		param[3].buffer = s_dist_01;
-		param[3].buffer_length = strlen(s_dist_01);
-		param[4].buffer_type = MYSQL_TYPE_STRING;
-		param[4].buffer = s_dist_02;
-		param[4].buffer_length = strlen(s_dist_02);
-		param[5].buffer_type = MYSQL_TYPE_STRING;
-		param[5].buffer = s_dist_03;
-		param[5].buffer_length = strlen(s_dist_03);
-		param[6].buffer_type = MYSQL_TYPE_STRING;
-		param[6].buffer = s_dist_04;
-		param[6].buffer_length = strlen(s_dist_04);
-		param[7].buffer_type = MYSQL_TYPE_STRING;
-		param[7].buffer = s_dist_05;
-		param[7].buffer_length = strlen(s_dist_05);
-		param[8].buffer_type = MYSQL_TYPE_STRING;
-		param[8].buffer = s_dist_06;
-		param[8].buffer_length = strlen(s_dist_06);
-		param[9].buffer_type = MYSQL_TYPE_STRING;
-		param[9].buffer = s_dist_07;
-		param[9].buffer_length = strlen(s_dist_07);
-		param[10].buffer_type = MYSQL_TYPE_STRING;
-		param[10].buffer = s_dist_08;
-		param[10].buffer_length = strlen(s_dist_08);
-		param[11].buffer_type = MYSQL_TYPE_STRING;
-		param[11].buffer = s_dist_09;
-		param[11].buffer_length = strlen(s_dist_09);
-		param[12].buffer_type = MYSQL_TYPE_STRING;
-		param[12].buffer = s_dist_10;
-		param[12].buffer_length = strlen(s_dist_10);
-		param[13].buffer_type = MYSQL_TYPE_STRING;
-		param[13].buffer = s_data;
-		param[13].buffer_length = strlen(s_data);
-		if( mysql_stmt_bind_param(stmt[2], param) ) goto sqlerr;
-		if( (error = try_stmt_execute(stmt[2])) ) goto out;
+        pipe_separated_values(stderr, s_dump, "stock", "%d|%d|%d|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|0|0|0|%s|\n",
+            s_i_id,
+            s_w_id,
+            s_quantity,
+            s_dist_01,
+            s_dist_02,
+            s_dist_03,
+            s_dist_04,
+            s_dist_05,
+            s_dist_06,
+            s_dist_07,
+            s_dist_08,
+            s_dist_09,
+            s_dist_10,
+            s_data);
 
 		if (option_debug)
 			printf("SID = %ld, WID = %ld, Quan = %ld\n",
@@ -721,8 +634,9 @@ sqlerr:
  * +==================================================================
  */
 int 
-District(w_id)
+District(w_id, d_dump)
 	int             w_id;
+    struct psv_dump* d_dump;
 {
 
 	int             d_id;
@@ -739,8 +653,6 @@ District(w_id)
 	float           d_ytd;
 	int             d_next_o_id;
     int             error;
-
-	MYSQL_BIND    param[11];
 
 	/* EXEC SQL WHENEVER SQLERROR GOTO sqlerr;*/
 
@@ -764,37 +676,18 @@ retry:
 				       :d_street_1,:d_street_2,:d_city,:d_state,:d_zip,
 				       :d_tax,:d_ytd,:d_next_o_id);*/
 
-		memset(param, 0, sizeof(MYSQL_BIND) * 11); /* initialize */
-		param[0].buffer_type = MYSQL_TYPE_LONG;
-		param[0].buffer = &d_id;
-		param[1].buffer_type = MYSQL_TYPE_LONG;
-		param[1].buffer = &d_w_id;
-		param[2].buffer_type = MYSQL_TYPE_STRING;
-		param[2].buffer = d_name;
-		param[2].buffer_length = strlen(d_name);
-		param[3].buffer_type = MYSQL_TYPE_STRING;
-		param[3].buffer = d_street_1;
-		param[3].buffer_length = strlen(d_street_1);
-		param[4].buffer_type = MYSQL_TYPE_STRING;
-		param[4].buffer = d_street_2;
-		param[4].buffer_length = strlen(d_street_2);
-		param[5].buffer_type = MYSQL_TYPE_STRING;
-		param[5].buffer = d_city;
-		param[5].buffer_length = strlen(d_city);
-		param[6].buffer_type = MYSQL_TYPE_STRING;
-		param[6].buffer = d_state;
-		param[6].buffer_length = strlen(d_state);
-		param[7].buffer_type = MYSQL_TYPE_STRING;
-		param[7].buffer = d_zip;
-		param[7].buffer_length = strlen(d_zip);
-		param[8].buffer_type = MYSQL_TYPE_FLOAT;
-		param[8].buffer = &d_tax;
-		param[9].buffer_type = MYSQL_TYPE_FLOAT;
-		param[9].buffer = &d_ytd;
-		param[10].buffer_type = MYSQL_TYPE_LONG;
-		param[10].buffer = &d_next_o_id;
-		if( mysql_stmt_bind_param(stmt[3], param) ) goto sqlerr;
-		if( (error = try_stmt_execute(stmt[3])) ) goto out;
+        pipe_separated_values(stderr, d_dump, "district", "%d|%d|%s|%s|%s|%s|%s|%s|%f|%f|%d|\n",
+            d_id,
+            d_w_id,
+            d_name,
+            d_street_1,
+            d_street_2,
+            d_city,
+            d_state,
+            d_zip,
+            d_tax,
+            d_ytd,
+            d_next_o_id);
 
 		if (option_debug)
 			printf("DID = %ld, WID = %ld, Name = %10s, Tax = %5.2f\n",
@@ -816,9 +709,11 @@ sqlerr:
  * +==================================================================
  */
 void 
-Customer(d_id, w_id)
+Customer(d_id, w_id, c_dump, h_dump)
 	int             d_id;
 	int             w_id;
+    struct psv_dump* c_dump;
+    struct psv_dump* h_dump;
 {
 	int             c_id;
 	int             c_d_id;
@@ -845,8 +740,6 @@ Customer(d_id, w_id)
 
 	char            h_data[25];
     int             retried = 0;
-
-	MYSQL_BIND    param[18];
 
 	/*EXEC SQL WHENEVER SQLERROR GOTO sqlerr;*/
 
@@ -900,57 +793,25 @@ retry:
 				  :c_credit_lim,:c_discount,:c_balance,
 				  10.0, 1, 0,:c_data);*/
 
-		memset(param, 0, sizeof(MYSQL_BIND) * 18); /* initialize */
-		param[0].buffer_type = MYSQL_TYPE_LONG;
-		param[0].buffer = &c_id;
-		param[1].buffer_type = MYSQL_TYPE_LONG;
-		param[1].buffer = &c_d_id;
-		param[2].buffer_type = MYSQL_TYPE_LONG;
-		param[2].buffer = &c_w_id;
-		param[3].buffer_type = MYSQL_TYPE_STRING;
-		param[3].buffer = c_first;
-		param[3].buffer_length = strlen(c_first);
-		param[4].buffer_type = MYSQL_TYPE_STRING;
-		param[4].buffer = c_middle;
-		param[4].buffer_length = strlen(c_middle);
-		param[5].buffer_type = MYSQL_TYPE_STRING;
-		param[5].buffer = c_last;
-		param[5].buffer_length = strlen(c_last);
-		param[6].buffer_type = MYSQL_TYPE_STRING;
-		param[6].buffer = c_street_1;
-		param[6].buffer_length = strlen(c_street_1);
-		param[7].buffer_type = MYSQL_TYPE_STRING;
-		param[7].buffer = c_street_2;
-		param[7].buffer_length = strlen(c_street_2);
-		param[8].buffer_type = MYSQL_TYPE_STRING;
-		param[8].buffer = c_city;
-		param[8].buffer_length = strlen(c_city);
-		param[9].buffer_type = MYSQL_TYPE_STRING;
-		param[9].buffer = c_state;
-		param[9].buffer_length = strlen(c_state);
-		param[10].buffer_type = MYSQL_TYPE_STRING;
-		param[10].buffer = c_zip;
-		param[10].buffer_length = strlen(c_zip);
-		param[11].buffer_type = MYSQL_TYPE_STRING;
-		param[11].buffer = c_phone;
-		param[11].buffer_length = strlen(c_phone);
-		param[12].buffer_type = MYSQL_TYPE_STRING;
-		param[12].buffer = timestamp;
-		param[12].buffer_length = strlen(timestamp);
-		param[13].buffer_type = MYSQL_TYPE_STRING;
-		param[13].buffer = c_credit;
-		param[13].buffer_length = strlen(c_credit);
-		param[14].buffer_type = MYSQL_TYPE_LONG;
-		param[14].buffer = &c_credit_lim;
-		param[15].buffer_type = MYSQL_TYPE_FLOAT;
-		param[15].buffer = &c_discount;
-		param[16].buffer_type = MYSQL_TYPE_FLOAT;
-		param[16].buffer = &c_balance;
-		param[17].buffer_type = MYSQL_TYPE_STRING;
-		param[17].buffer = c_data;
-		param[17].buffer_length = strlen(c_data);
-		if( mysql_stmt_bind_param(stmt[4], param) ) goto sqlerr;
-		if( try_stmt_execute(stmt[4]) ) goto retry;
+        pipe_separated_values(stderr, c_dump, "customer", "%d|%d|%d|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%d|%f|%f|10.0|1|0|%s|\n",
+            c_id,
+            c_d_id,
+            c_w_id,
+            c_first,
+            c_middle,
+            c_last,
+            c_street_1,
+            c_street_2,
+            c_city,
+            c_state,
+            c_zip,
+            c_phone,
+            timestamp,
+            c_credit,
+            c_credit_lim,
+            c_discount,
+            c_balance,
+            c_data);
 
 		h_amount = 10.0;
 
@@ -962,27 +823,15 @@ retry:
 				       :c_d_id,:c_w_id, :timestamp,
 				       :h_amount,:h_data);*/
 
-		memset(param, 0, sizeof(MYSQL_BIND) * 8); /* initialize */
-		param[0].buffer_type = MYSQL_TYPE_LONG;
-		param[0].buffer = &c_id;
-		param[1].buffer_type = MYSQL_TYPE_LONG;
-		param[1].buffer = &c_d_id;
-		param[2].buffer_type = MYSQL_TYPE_LONG;
-		param[2].buffer = &c_w_id;
-		param[3].buffer_type = MYSQL_TYPE_LONG;
-		param[3].buffer = &c_d_id;
-		param[4].buffer_type = MYSQL_TYPE_LONG;
-		param[4].buffer = &c_w_id;
-		param[5].buffer_type = MYSQL_TYPE_STRING;
-		param[5].buffer = timestamp;
-		param[5].buffer_length = strlen(timestamp);
-		param[6].buffer_type = MYSQL_TYPE_FLOAT;
-		param[6].buffer = &h_amount;
-		param[7].buffer_type = MYSQL_TYPE_STRING;
-		param[7].buffer = h_data;
-		param[7].buffer_length = strlen(h_data);
-		if( mysql_stmt_bind_param(stmt[5], param) ) goto sqlerr;
-		if( try_stmt_execute(stmt[5]) ) goto retry;
+        pipe_separated_values(stderr, h_dump, "history", "%d|%d|%d|%d|%d|%s|%f|%s|\n",
+            c_id,
+            c_d_id,
+            c_w_id,
+            c_d_id,
+            c_w_id,
+            timestamp,
+            h_amount,
+            h_data);
 
 		if (option_debug)
 			printf("CID = %ld, LST = %s, P# = %s\n",
@@ -994,8 +843,6 @@ retry:
 				printf(" %ld\n", c_id);
 		}
 	}
-	/* EXEC SQL COMMIT WORK; */
-	if( mysql_commit(mysql) ) goto sqlerr;
 	printf("Customer Done.\n");
 
 	return;
@@ -1011,8 +858,12 @@ sqlerr:
  * +==================================================================
  */
 void 
-Orders(d_id, w_id)
-	int             d_id, w_id;
+Orders(d_id, w_id, o_dump, n_dump, ol_dump)
+	int             d_id;
+    int             w_id;
+    struct psv_dump* o_dump;
+    struct psv_dump* n_dump;
+    struct psv_dump* ol_dump;
 {
 
 	int             o_id;
@@ -1031,8 +882,6 @@ Orders(d_id, w_id)
 	float           c_discount;
 	float           tmp_float;
     int             retried = 0;
-
-	MYSQL_BIND    param[10];
 
 	/* EXEC SQL WHENEVER SQLERROR GOTO sqlerr; */
 
@@ -1059,36 +908,22 @@ retry:
 					       :timestamp,
 					       NULL,:o_ol_cnt, 1);*/
 
-		    memset(param, 0, sizeof(MYSQL_BIND) * 6); /* initialize */
-		    param[0].buffer_type = MYSQL_TYPE_LONG;
-		    param[0].buffer = &o_id;
-		    param[1].buffer_type = MYSQL_TYPE_LONG;
-		    param[1].buffer = &o_d_id;
-		    param[2].buffer_type = MYSQL_TYPE_LONG;
-		    param[2].buffer = &o_w_id;
-		    param[3].buffer_type = MYSQL_TYPE_LONG;
-		    param[3].buffer = &o_c_id;
-		    param[4].buffer_type = MYSQL_TYPE_STRING;
-		    param[4].buffer = timestamp;
-		    param[4].buffer_length = strlen(timestamp);
-		    param[5].buffer_type = MYSQL_TYPE_LONG;
-		    param[5].buffer = &o_ol_cnt;
-		    if( mysql_stmt_bind_param(stmt[6], param) ) goto sqlerr;
-		    if( try_stmt_execute(stmt[6]) ) goto retry;
+            pipe_separated_values(stderr, o_dump, "orders", "%d|%d|%d|%d|%s|NULL|%d|1|\n",
+                o_id,
+                o_d_id,
+                o_w_id,
+                o_c_id,
+                timestamp,
+                o_ol_cnt);
 
 		    /*EXEC SQL INSERT INTO
 			                new_orders
 			                values(:o_id,:o_d_id,:o_w_id);*/
 
-		    memset(param, 0, sizeof(MYSQL_BIND) * 3); /* initialize */
-		    param[0].buffer_type = MYSQL_TYPE_LONG;
-		    param[0].buffer = &o_id;
-		    param[1].buffer_type = MYSQL_TYPE_LONG;
-		    param[1].buffer = &o_d_id;
-		    param[2].buffer_type = MYSQL_TYPE_LONG;
-		    param[2].buffer = &o_w_id;
-		    if( mysql_stmt_bind_param(stmt[7], param) ) goto sqlerr;
-		    if( try_stmt_execute(stmt[7]) ) goto retry;
+            pipe_separated_values(stderr, n_dump, "new_orders", "%d|%d|%d|\n",
+                o_id,
+                o_d_id,
+                o_w_id);
 
 		} else {
 		    /*EXEC SQL INSERT INTO
@@ -1097,24 +932,14 @@ retry:
 				   :timestamp,
 				   :o_carrier_id,:o_ol_cnt, 1);*/
 
-		    memset(param, 0, sizeof(MYSQL_BIND) * 7); /* initialize */
-		    param[0].buffer_type = MYSQL_TYPE_LONG;
-		    param[0].buffer = &o_id;
-		    param[1].buffer_type = MYSQL_TYPE_LONG;
-		    param[1].buffer = &o_d_id;
-		    param[2].buffer_type = MYSQL_TYPE_LONG;
-		    param[2].buffer = &o_w_id;
-		    param[3].buffer_type = MYSQL_TYPE_LONG;
-		    param[3].buffer = &o_c_id;
-		    param[4].buffer_type = MYSQL_TYPE_STRING;
-		    param[4].buffer = timestamp;
-		    param[4].buffer_length = strlen(timestamp);
-		    param[5].buffer_type = MYSQL_TYPE_LONG;
-		    param[5].buffer = &o_carrier_id;
-		    param[6].buffer_type = MYSQL_TYPE_LONG;
-		    param[6].buffer = &o_ol_cnt;
-		    if( mysql_stmt_bind_param(stmt[8], param) ) goto sqlerr;
-		    if( try_stmt_execute(stmt[8]) ) goto retry;
+            pipe_separated_values(stderr, o_dump, "orders", "%d|%d|%d|%d|%s|%d|%d|1|\n",
+                o_id,
+                o_d_id,
+                o_w_id,
+                o_c_id,
+                timestamp,
+                o_carrier_id,
+                o_ol_cnt);
 
 		}
 
@@ -1141,28 +966,16 @@ retry:
 						       :ol_i_id,:ol_supply_w_id, NULL,
 						       :ol_quantity,:tmp_float,:ol_dist_info);*/
 
-			    memset(param, 0, sizeof(MYSQL_BIND) * 9); /* initialize */
-			    param[0].buffer_type = MYSQL_TYPE_LONG;
-			    param[0].buffer = &o_id;
-			    param[1].buffer_type = MYSQL_TYPE_LONG;
-			    param[1].buffer = &o_d_id;
-			    param[2].buffer_type = MYSQL_TYPE_LONG;
-			    param[2].buffer = &o_w_id;
-			    param[3].buffer_type = MYSQL_TYPE_LONG;
-			    param[3].buffer = &ol;
-			    param[4].buffer_type = MYSQL_TYPE_LONG;
-			    param[4].buffer = &ol_i_id;
-			    param[5].buffer_type = MYSQL_TYPE_LONG;
-			    param[5].buffer = &ol_supply_w_id;
-			    param[6].buffer_type = MYSQL_TYPE_LONG;
-			    param[6].buffer = &ol_quantity;
-			    param[7].buffer_type = MYSQL_TYPE_FLOAT;
-			    param[7].buffer = &tmp_float;
-			    param[8].buffer_type = MYSQL_TYPE_STRING;
-			    param[8].buffer = ol_dist_info;
-			    param[8].buffer_length = strlen(ol_dist_info);
-			    if( mysql_stmt_bind_param(stmt[9], param) ) goto sqlerr;
-			    if( try_stmt_execute(stmt[9]) ) goto retry;
+                pipe_separated_values(stderr, ol_dump, "order_line", "%d|%d|%d|%d|%d|%d|NULL|%d|%f|%s|\n",
+                    o_id,
+                    o_d_id,
+                    o_w_id,
+                    ol,
+                    ol_i_id,
+                    ol_supply_w_id,
+                    ol_quantity,
+                    tmp_float,
+                    ol_dist_info);
 
 			} else {
 			    /*EXEC SQL INSERT INTO
@@ -1172,31 +985,17 @@ retry:
 					   :timestamp,
 					   :ol_quantity,:ol_amount,:ol_dist_info);*/
 
-			    memset(param, 0, sizeof(MYSQL_BIND) * 10); /* initialize */
-			    param[0].buffer_type = MYSQL_TYPE_LONG;
-			    param[0].buffer = &o_id;
-			    param[1].buffer_type = MYSQL_TYPE_LONG;
-			    param[1].buffer = &o_d_id;
-			    param[2].buffer_type = MYSQL_TYPE_LONG;
-			    param[2].buffer = &o_w_id;
-			    param[3].buffer_type = MYSQL_TYPE_LONG;
-			    param[3].buffer = &ol;
-			    param[4].buffer_type = MYSQL_TYPE_LONG;
-			    param[4].buffer = &ol_i_id;
-			    param[5].buffer_type = MYSQL_TYPE_LONG;
-			    param[5].buffer = &ol_supply_w_id;
-			    param[6].buffer_type = MYSQL_TYPE_STRING;
-			    param[6].buffer = timestamp;
-			    param[6].buffer_length = strlen(timestamp);
-			    param[7].buffer_type = MYSQL_TYPE_LONG;
-			    param[7].buffer = &ol_quantity;
-			    param[8].buffer_type = MYSQL_TYPE_FLOAT;
-			    param[8].buffer = &ol_amount;
-			    param[9].buffer_type = MYSQL_TYPE_STRING;
-			    param[9].buffer = ol_dist_info;
-			    param[9].buffer_length = strlen(ol_dist_info);
-			    if( mysql_stmt_bind_param(stmt[10], param) ) goto sqlerr;
-			    if( try_stmt_execute(stmt[10]) ) goto retry;
+                pipe_separated_values(stderr, ol_dump, "order_line", "%d|%d|%d|%d|%d|%d|%s|%d|%f|%s|\n",
+                    o_id,
+                    o_d_id,
+                    o_w_id,
+                    ol,
+                    ol_i_id,
+                    ol_supply_w_id,
+                    timestamp,
+                    ol_quantity,
+                    ol_amount,
+                    ol_dist_info);
 			}
 
 			if (option_debug)
@@ -1212,9 +1011,6 @@ retry:
 				printf(" %ld\n", o_id);
 		}
 	}
-	/*EXEC SQL COMMIT WORK;*/
-	if( mysql_commit(mysql) ) goto sqlerr;
-
 	printf("Orders Done.\n");
 	return;
 sqlerr:
@@ -1240,31 +1036,4 @@ MakeAddress(str1, str2, city, state, zip)
 	city[ MakeAlphaString(10, 20, city) ] = 0;	/* City */
 	state[ MakeAlphaString(2, 2, state) ] = 0;	/* State */
 	zip[ MakeNumberString(9, 9, zip) ] = 0;	/* Zip */
-}
-
-/*
- * ==================================================================+ |
- * ROUTINE NAME |      Error() | DESCRIPTION |      Handles an error from a
- * SQL call. | ARGUMENTS
- * +==================================================================
- */
-void 
-Error(mysql_stmt)
-        MYSQL_STMT   *mysql_stmt;
-{
-    if(mysql_stmt) {
-	printf("\n%d, %s, %s", mysql_stmt_errno(mysql_stmt),
-	       mysql_stmt_sqlstate(mysql_stmt), mysql_stmt_error(mysql_stmt) );
-    }
-    printf("\n%d, %s, %s\n", mysql_errno(mysql), mysql_sqlstate(mysql), mysql_error(mysql) );
-
-    /*EXEC SQL WHENEVER SQLERROR CONTINUE;*/
-
-    /*EXEC SQL ROLLBACK WORK;*/
-    mysql_rollback(mysql);
-
-    /*EXEC SQL DISCONNECT;*/
-    mysql_close(mysql);
-
-	exit(-1);
 }
