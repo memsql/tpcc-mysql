@@ -21,13 +21,16 @@ OBJS=		main.o spt_proc.o driver.o support.o sequence.o rthist.o sb_percentile.o 
 .c.o:
 	$(CC) $(CFLAGS) $(INC) $(DEFS) -c $*.c
 
-all: ../tpcc_load ../tpcc_start
+all: ../tpcc_load ../tpcc_start ../output
 
 ../tpcc_load : load.o support.o
 	$(CC) load.o support.o $(LIBS) -o ../tpcc_load
 
 ../tpcc_start : $(OBJS)
 	$(CC) $(OBJS) $(LIBS) -o ../tpcc_start
+
+../output:
+	mkdir $@
 
 clean :
 	rm -f *.o

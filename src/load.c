@@ -66,7 +66,7 @@ pipe_separated_values(
     {
         // only should happen on first invocation
         char fileNameBuffer[128];
-        sprintf(&fileNameBuffer[0], "./%s.%.5d.%.5d",load_kind, min_ware, dump->marker);
+        sprintf(&fileNameBuffer[0], "./output/%s.%.5d.%.5d",load_kind, min_ware, dump->marker);
         dump->dump_to = fopen(&fileNameBuffer[0], "w");
         fprintf("Failed? %p", dump->dump_to);
     }
@@ -81,13 +81,13 @@ pipe_separated_values(
         // name to the progress file, and open the next file moving marker
         // forward.
         char fileNameBuffer[128];
-        sprintf(&fileNameBuffer[0], "./%s.%.5d.%.5d", load_kind, min_ware, dump->marker);
+        sprintf(&fileNameBuffer[0], "./output/%s.%.5d.%.5d", load_kind, min_ware, dump->marker);
 
         fclose(dump->dump_to);
         fprintf(progress, "%s\n", &fileNameBuffer[0]);
 
         dump->marker++;
-        sprintf(&fileNameBuffer[0], "./%s.%.5d.%.5d", load_kind, min_ware, dump->marker);
+        sprintf(&fileNameBuffer[0], "./output/%s.%.5d.%.5d", load_kind, min_ware, dump->marker);
         dump->dump_to = fopen(&fileNameBuffer[0], "w");
 
         dump->len = 0;
