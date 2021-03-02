@@ -11,6 +11,7 @@ INC=		-I. `mysql_config --include`
 #DEFS=		-DDEBUG
 
 CFLAGS=		-w -O3 -g
+LDFLAGS=	-lpthread -lm
 
 TRANSACTIONS=	neword.o payment.o ordstat.o delivery.o slev.o
 OBJS=		main.o spt_proc.o driver.o support.o sequence.o rthist.o sb_percentile.o $(TRANSACTIONS)
@@ -24,10 +25,10 @@ OBJS=		main.o spt_proc.o driver.o support.o sequence.o rthist.o sb_percentile.o 
 all: ../tpcc_load ../tpcc_start ../output
 
 ../tpcc_load : load.o support.o
-	$(CC) load.o support.o $(LIBS) -o ../tpcc_load
+	$(CC) $(LDFLAGS) load.o support.o $(LIBS) -o ../tpcc_load
 
 ../tpcc_start : $(OBJS)
-	$(CC) $(OBJS) $(LIBS) -o ../tpcc_start
+	$(CC) $(LDFLAGS) $(OBJS) $(LIBS) -o ../tpcc_start
 
 ../output:
 	mkdir $@
