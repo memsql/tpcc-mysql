@@ -29,6 +29,10 @@ extern int num_node;
 extern int time_count;
 extern FILE *freport_file;
 
+extern int use_wait_time;
+extern int num_driver;
+extern int driver_id;
+
 extern int success[];
 extern int late[];
 extern int retry[];
@@ -47,39 +51,149 @@ extern int rt_limit[];
 extern long clk_tck;
 extern sb_percentile_t local_percentile;
 
+#define KEY_TIME_NEWORD   18000
+#define KEY_TIME_PAYMENT  3000
+#define KEY_TIME_ORDSTAT  2000
+#define KEY_TIME_DELIVERY 2000
+#define KEY_TIME_SLEV     2000
+
+int key_time[5] = {
+    KEY_TIME_NEWORD,
+    KEY_TIME_PAYMENT,
+    KEY_TIME_ORDSTAT,
+    KEY_TIME_DELIVERY,
+    KEY_TIME_SLEV
+};
+
+#define MEAN_THINK_TIME_NEWORD   12000
+#define MEAN_THINK_TIME_PAYMENT  12000
+#define MEAN_THINK_TIME_ORDSTAT  10000
+#define MEAN_THINK_TIME_DELIVERY 5000
+#define MEAN_THINK_TIME_SLEV     5000
+
+int mean_think_time[5] = {
+    MEAN_THINK_TIME_NEWORD,
+    MEAN_THINK_TIME_PAYMENT,
+    MEAN_THINK_TIME_ORDSTAT,
+    MEAN_THINK_TIME_DELIVERY,
+    MEAN_THINK_TIME_SLEV
+};
+
 #define MAX_RETRY 2000
+#define NUM_TERMINALS 10
 
 int driver (int t_num)
 {
     int i, j;
-    
+    int tx_type;
+    double think_time_factor;
+    clock_t clk;
+    struct timespec tbuf;
+    double current_time;
+    /* The time where the next transaction can be executed for each terminal. */
+    double wait_until[NUM_TERMINALS];
+    int next_tx_type[NUM_TERMINALS];
+    int terminal;
+    time_t start_sec;
 
-    /* Actually, WaitTimes are needed... */
+    if(use_wait_time){
+      clk = clock_gettime(CLOCK_MONOTONIC, &tbuf);
+      start_sec = tbuf.tv_sec;
+      current_time = (tbuf.tv_sec - start_sec) * 1000.0 + tbuf.tv_nsec / 1000000.0;
+
+      for(i = 0; i < NUM_TERMINALS; i++){
+        next_tx_type[i] = seq_get();
+        wait_until[i] = current_time + key_time[next_tx_type[i]];
+      }
+    }
+
     while( activate_transaction ){
-      switch(seq_get()){
-      case 0:
-	do_neword(t_num);
-	break;
-      case 1:
-	do_payment(t_num);
-	break;
-      case 2:
-	do_ordstat(t_num);
-	break;
-      case 3:
-	do_delivery(t_num);
-	break;
-      case 4:
-	do_slev(t_num);
-	break;
-      default:
-	printf("Error - Unknown sequence.\n");
+
+      if(use_wait_time){
+        clk = clock_gettime(CLOCK_MONOTONIC, &tbuf);
+        current_time = (tbuf.tv_sec - start_sec) * 1000.0 + tbuf.tv_nsec / 1000000.0;
+        /* Find the terminal with the earliest time to execute. */
+        terminal = -1;
+        for(i = 0; i < NUM_TERMINALS; i++)
+        {
+            if(terminal == -1 || wait_until[i] < wait_until[terminal])
+            {
+                terminal = i;
+            }
+        }
+        if (wait_until[terminal] > current_time)
+        {
+            /* Sleep if no terminal has transaction to execute yet. */
+            usleep((long long)(1000 * (wait_until[terminal] - current_time)) + 1);
+            continue;
+        }
+        else
+        {
+            tx_type = next_tx_type[terminal];
+        }
+      }
+      else{
+        tx_type = seq_get();
       }
 
+      switch(tx_type){
+      case 0:
+        do_neword(t_num);
+        break;
+      case 1:
+        do_payment(t_num);
+        break;
+      case 2:
+        do_ordstat(t_num);
+        break;
+      case 3:
+        do_delivery(t_num);
+        break;
+      case 4:
+        do_slev(t_num);
+        break;
+      default:
+        printf("Error - Unknown sequence.\n");
+      }
+
+      if(use_wait_time){
+        think_time_factor = -log((rand() + 0.5) / RAND_MAX);
+        if(think_time_factor > 10){
+          /* According to TPCC spec, each distribution may be truncated at 10 times its mean. */
+          think_time_factor = 10;
+        }
+
+        clk = clock_gettime(CLOCK_MONOTONIC, &tbuf);
+        current_time = (tbuf.tv_sec - start_sec) * 1000.0 + tbuf.tv_nsec / 1000000.0;
+        next_tx_type[terminal] = seq_get();
+        wait_until[terminal] = current_time
+            + think_time_factor * mean_think_time[tx_type]
+            + key_time[next_tx_type[terminal]];
+      }
     }
 
     return(0);
 
+}
+
+/*
+ * get the warehouse id corresponds to the current connection.
+ */
+static int get_warehouse(int t_num)
+{
+    int c_num, w_id;
+
+    if(use_wait_time){
+      w_id = driver_id + 1 + num_driver * t_num;
+    }
+    else if(num_node==0){
+      w_id = RandomNumber(1, num_ware);
+    }else{
+      c_num = ((num_node * t_num)/num_conn); /* drop moduls */
+      w_id = RandomNumber(1 + (num_ware * c_num)/num_node,
+                          (num_ware * (c_num + 1))/num_node);
+    }
+    return w_id;
 }
 
 /*
@@ -88,7 +202,6 @@ int driver (int t_num)
  */
 static int do_neword (int t_num)
 {
-    int c_num;
     int i,ret;
     clock_t clk1,clk2;
     double rt;
@@ -103,13 +216,7 @@ static int do_neword (int t_num)
     int  supware[MAX_NUM_ITEMS];
     int  qty[MAX_NUM_ITEMS];
 
-    if(num_node==0){
-	w_id = RandomNumber(1, num_ware);
-    }else{
-	c_num = ((num_node * t_num)/num_conn); /* drop moduls */
-	w_id = RandomNumber(1 + (num_ware * c_num)/num_node,
-			    (num_ware * (c_num + 1))/num_node);
-    }
+    w_id = get_warehouse(t_num);
     d_id = RandomNumber(1, DIST_PER_WARE);
     c_id = NURand(1023, 1, CUST_PER_DIST);
 
@@ -198,7 +305,6 @@ static int other_ware (int home_ware)
  */
 static int do_payment (int t_num)
 {
-    int c_num;
     int byname,i,ret;
     clock_t clk1,clk2;
     double rt;
@@ -207,13 +313,7 @@ static int do_payment (int t_num)
     int  w_id, d_id, c_w_id, c_d_id, c_id, h_amount;
     char c_last[17];
 
-    if(num_node==0){
-	w_id = RandomNumber(1, num_ware);
-    }else{
-	c_num = ((num_node * t_num)/num_conn); /* drop moduls */
-	w_id = RandomNumber(1 + (num_ware * c_num)/num_node,
-			    (num_ware * (c_num + 1))/num_node);
-    }
+    w_id = get_warehouse(t_num);
     d_id = RandomNumber(1, DIST_PER_WARE);
     c_id = NURand(1023, 1, CUST_PER_DIST); 
     Lastname(NURand(255,0,999), c_last); 
@@ -279,7 +379,6 @@ static int do_payment (int t_num)
  */
 static int do_ordstat (int t_num)
 {
-    int c_num;
     int byname,i,ret;
     clock_t clk1,clk2;
     double rt;
@@ -288,13 +387,7 @@ static int do_ordstat (int t_num)
     int  w_id, d_id, c_id;
     char c_last[16];
 
-    if(num_node==0){
-	w_id = RandomNumber(1, num_ware);
-    }else{
-	c_num = ((num_node * t_num)/num_conn); /* drop moduls */
-	w_id = RandomNumber(1 + (num_ware * c_num)/num_node,
-			    (num_ware * (c_num + 1))/num_node);
-    }
+    w_id = get_warehouse(t_num);
     d_id = RandomNumber(1, DIST_PER_WARE);
     c_id = NURand(1023, 1, CUST_PER_DIST); 
     Lastname(NURand(255,0,999), c_last); 
@@ -353,7 +446,6 @@ static int do_ordstat (int t_num)
  */
 static int do_delivery (int t_num)
 {
-    int c_num;
     int i,ret;
     clock_t clk1,clk2;
     double rt;
@@ -361,13 +453,7 @@ static int do_delivery (int t_num)
     struct timespec tbuf2;
     int  w_id, o_carrier_id;
 
-    if(num_node==0){
-	w_id = RandomNumber(1, num_ware);
-    }else{
-	c_num = ((num_node * t_num)/num_conn); /* drop moduls */
-	w_id = RandomNumber(1 + (num_ware * c_num)/num_node,
-			    (num_ware * (c_num + 1))/num_node);
-    }
+    w_id = get_warehouse(t_num);
     o_carrier_id = RandomNumber(1, 10);
 
       clk1 = clock_gettime(CLOCK_MONOTONIC, &tbuf1 );
@@ -419,7 +505,6 @@ static int do_delivery (int t_num)
  */
 static int do_slev (int t_num)
 {
-    int c_num;
     int i,ret;
     clock_t clk1,clk2;
     double rt;
@@ -427,13 +512,7 @@ static int do_slev (int t_num)
     struct timespec tbuf2;
     int  w_id, d_id, level;
 
-    if(num_node==0){
-	w_id = RandomNumber(1, num_ware);
-    }else{
-	c_num = ((num_node * t_num)/num_conn); /* drop moduls */
-	w_id = RandomNumber(1 + (num_ware * c_num)/num_node,
-			    (num_ware * (c_num + 1))/num_node);
-    }
+    w_id = get_warehouse(t_num);
     d_id = RandomNumber(1, DIST_PER_WARE); 
     level = RandomNumber(10, 20); 
 

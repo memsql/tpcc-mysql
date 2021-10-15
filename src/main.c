@@ -50,6 +50,10 @@ int num_node; /* number of servers that consists of cluster i.e. RAC (0:normal m
 #define NUM_NODE_MAX 8
 char node_string[NUM_NODE_MAX][DB_STRING_MAX];
 
+int use_wait_time = 0; /* "1" means use keying and think times. */
+int num_driver;
+int driver_id;
+
 int time_count;
 int PRINT_INTERVAL=10;
 int multi_schema = 0;
@@ -162,12 +166,15 @@ int main( int argc, char *argv[] )
   num_node = 0;
   arg_offset = 0;
 
+  use_wait_time = 0;
+  num_driver = 1;
+  driver_id = 0;
 
   clk_tck = sysconf(_SC_CLK_TCK);
 
   /* Parse args */
 
-    while ( (c = getopt(argc, argv, "h:P:d:u:p:w:c:r:l:i:f:t:m:o:S:0:1:2:3:4:")) != -1) {
+    while ( (c = getopt(argc, argv, "h:P:d:u:p:w:c:r:l:i:f:t:m:o:S:0:1:2:3:4:T:D:I:")) != -1) {
         switch (c) {
         case 'h':
             printf ("option h with value '%s'\n", optarg);
@@ -249,8 +256,20 @@ int main( int argc, char *argv[] )
             printf ("option 4 (response time limit for transaction 4) '%s'\n", optarg);
             rt_limit[4] = atoi(optarg);
             break;
+        case 'T':
+            printf ("option T with value '%s'\n", optarg);
+            use_wait_time = atoi(optarg);
+            break;
+        case 'D':
+            printf ("option D with value '%s'\n", optarg);
+            num_driver = atoi(optarg);
+            break;
+        case 'I':
+            printf ("option I with value '%s'\n", optarg);
+            driver_id = atoi(optarg);
+            break;
         case '?':
-    	    printf("Usage: tpcc_start -h server_host -P port -d database_name -u mysql_user -p mysql_password -w warehouses -c connections -r warmup_time -l running_time -i report_interval -f report_file -t trx_file\n");
+    	    printf("Usage: tpcc_start -h server_host -P port -d database_name -u mysql_user -p mysql_password -w warehouses -c connections -r warmup_time -l running_time -i report_interval -f report_file -t trx_file -T use_wait_time -D drivers -I driver_id\n");
             exit(0);
         default:
             printf ("?? getopt returned character code 0%o ??\n", c);
@@ -340,6 +359,20 @@ int main( int argc, char *argv[] )
     }
   }
 
+  if(use_wait_time > 0){
+    if(num_node > 0){
+      fprintf(stderr, "\n Wait time and cluster can't be used at the same time.\n");
+      exit(1);
+    }
+    if(driver_id < 0 || driver_id >= num_driver){
+      fprintf(stderr, "\n [driver_id] must be in between 0 and [num_driver] - 1.\n");
+      exit(1);
+    }
+
+    /* Use one connection per warehouse, divided among the drivers. */
+    num_conn = (num_ware + num_driver - 1 - driver_id) / num_driver;
+  }
+
   if ( strlen(report_file) > 0 ) {
     freport_file=fopen(report_file,"w+");
   }
@@ -368,6 +401,11 @@ int main( int argc, char *argv[] )
   if(valuable_flg==1){
     printf("      [ratio]: %d:%d:%d:%d:%d\n", atoi(argv[9 + arg_offset]), atoi(argv[10 + arg_offset]),
 	   atoi(argv[11 + arg_offset]), atoi(argv[12 + arg_offset]), atoi(argv[13 + arg_offset]) );
+  }
+  if(use_wait_time > 0){
+    printf("  [wait_time]: true\n");
+    printf("     [driver]: %d\n", num_driver);
+    printf("  [driver_id]: %d\n", driver_id);
   }
 
   /* alarm initialize */
