@@ -788,6 +788,8 @@ int thread_main (thread_arg* arg)
   
   ctx[t_num] = mysql_init(NULL);
 
+  mysql_options(ctx[t_num], MYSQL_DEFAULT_AUTH, "mysql_native_password");
+
   if(is_local==1){
     /* exec sql connect :connect_string; */
     resp = mysql_real_connect(ctx[t_num], "localhost", db_user, db_password, db_string_full, port, db_socket, 0);
