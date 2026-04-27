@@ -422,13 +422,13 @@ int payment( int t_num,
 		mysql_stmt_free_result(mysql_stmt);
 
 
-		sprintf(c_new_data, 
-			"| %4d %2d %4d %2d %4d $%7.2f %12c %24c",
+		snprintf(c_new_data, sizeof(c_new_data),
+			"| %4d %2d %4d %2d %4d $%7.2f %.12s %.24s",
 			c_id, c_d_id, c_w_id, d_id,
 			w_id, h_amount,
 			datetime, c_data);
 
-		strncat(c_new_data, c_data, 
+		strncat(c_new_data, c_data,
 			500 - strlen(c_new_data));
 
 		c_new_data[500] = '\0';

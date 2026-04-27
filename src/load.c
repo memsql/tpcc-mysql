@@ -11,19 +11,18 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 #include <ctype.h>
 #include <stdlib.h>
 #include <time.h>
+#include <sys/time.h>
 #include <fcntl.h>
 
 #include <mysql.h>
 
 #include "spt_proc.h"
 #include "tpc.h"
-
-#define NNULL ((void *)0)
-//#undef NULL
 
 MYSQL *mysql;
 MYSQL_STMT *stmt[11];
@@ -66,9 +65,9 @@ pipe_separated_values(
     {
         // only should happen on first invocation
         char fileNameBuffer[128];
-        sprintf(&fileNameBuffer[0], "./output/%s.%.5d.%.5d",load_kind, min_ware, dump->marker);
+        sprintf(&fileNameBuffer[0], "./output/%s.%.5ld.%.5d",load_kind, min_ware, dump->marker);
         dump->dump_to = fopen(&fileNameBuffer[0], "w");
-        fprintf("Failed? %p", dump->dump_to);
+        fprintf(stderr, "Failed? %p\n", (void*)dump->dump_to);
     }
 
     va_list args;
@@ -81,13 +80,13 @@ pipe_separated_values(
         // name to the progress file, and open the next file moving marker
         // forward.
         char fileNameBuffer[128];
-        sprintf(&fileNameBuffer[0], "./output/%s.%.5d.%.5d", load_kind, min_ware, dump->marker);
+        sprintf(&fileNameBuffer[0], "./output/%s.%.5ld.%.5d", load_kind, min_ware, dump->marker);
 
         fclose(dump->dump_to);
         fprintf(progress, "%s\n", &fileNameBuffer[0]);
 
         dump->marker++;
-        sprintf(&fileNameBuffer[0], "./output/%s.%.5d.%.5d", load_kind, min_ware, dump->marker);
+        sprintf(&fileNameBuffer[0], "./output/%s.%.5ld.%.5d", load_kind, min_ware, dump->marker);
         dump->dump_to = fopen(&fileNameBuffer[0], "w");
 
         dump->len = 0;
@@ -101,7 +100,7 @@ pipe_separated_finish(FILE* progress, struct psv_dump* dump, const char* load_ki
     {
         fclose(dump->dump_to);
         char fileNameBuffer[128];
-        sprintf(&fileNameBuffer, "%s.%.5d.%.5d", load_kind, min_ware, dump->marker);
+        sprintf(fileNameBuffer, "%s.%.5ld.%.5d", load_kind, min_ware, dump->marker);
         fprintf(progress, "%s\n", fileNameBuffer);
     }
 }
@@ -111,10 +110,8 @@ pipe_separated_finish(FILE* progress, struct psv_dump* dump, const char* load_ki
  * main() | ARGUMENTS |      Warehouses n [Debug] [Help]
  * +==================================================================
  */
-void 
-main(argc, argv)
-	int             argc;
-	char           *argv[];
+int
+main(int argc, char *argv[])
 {
 	char            arg[2];
     char           *ptr;
@@ -190,12 +187,12 @@ main(argc, argv)
 	printf("       [user]: %s\n", db_user);
 	printf("       [pass]: %s\n", db_password);
 
-	printf("  [warehouse]: %d\n", count_ware);
+	printf("  [warehouse]: %ld\n", count_ware);
 
 	if(particle_flg==1){
 	    printf("  [part(1-4)]: %d\n", part_no);
-	    printf("     [MIN WH]: %d\n", min_ware);
-	    printf("     [MAX WH]: %d\n", max_ware);
+	    printf("     [MIN WH]: %ld\n", min_ware);
+	    printf("     [MAX WH]: %ld\n", max_ware);
 	}
 
 	fd = open("/dev/urandom", O_RDONLY);
@@ -203,14 +200,14 @@ main(argc, argv)
 	    fd = open("/dev/random", O_RDONLY);
 	    if (fd == -1) {
 		struct timeval  tv;
-		gettimeofday(&tv, NNULL);
+		gettimeofday(&tv, NULL);
 		seed = (tv.tv_sec ^ tv.tv_usec) * tv.tv_sec * tv.tv_usec ^ tv.tv_sec;
 	    }else{
-		read(fd, &seed, sizeof(seed));
+		if (read(fd, &seed, sizeof(seed)) != (ssize_t)sizeof(seed)) seed = (int)time(NULL);
 		close(fd);
 	    }
 	}else{
-	    read(fd, &seed, sizeof(seed));
+	    if (read(fd, &seed, sizeof(seed)) != (ssize_t)sizeof(seed)) seed = (int)time(NULL);
 	    close(fd);
 	}
 	SetSeed(seed);
@@ -251,9 +248,6 @@ main(argc, argv)
 
 	printf("\n...DATA LOADING COMPLETED SUCCESSFULLY.\n");
 	exit(0);
-Error_SqlCall_close:
-Error_SqlCall:
-	Error(0);
 }
 
 /*
@@ -320,7 +314,7 @@ retry:
 		}
 		if (option_debug)
         {
-			printf("IID = %ld, Name= %16s, Price = %5.2f\n",
+			printf("IID = %d, Name= %16s, Price = %5.2f\n",
 			       i_id, i_name, i_price);
         }
 
@@ -350,7 +344,7 @@ retry:
 			fflush(stdout);
 
 			if (!(i_id % 5000))
-				printf(" %ld\n", i_id);
+				printf(" %d\n", i_id);
 		}
 	}
 
@@ -411,7 +405,7 @@ retry:
 		w_ytd = 300000.00;
 
 		if (option_debug)
-			printf("WID = %ld, Name= %16s, Tax = %5.2f\n",
+			printf("WID = %d, Name= %16s, Tax = %5.2f\n",
 			       w_id, w_name, w_tax);
 
 		/*EXEC SQL INSERT INTO
@@ -512,10 +506,8 @@ sqlerr:
  * ARGUMENTS |      w_id - warehouse id
  * +==================================================================
  */
-int 
-Stock(w_id, s_dump)
-	int             w_id;
-    struct psv_dump* s_dump;
+int
+Stock(int w_id, struct psv_dump* s_dump)
 {
 
 	int             s_i_id;
@@ -538,10 +530,10 @@ Stock(w_id, s_dump)
 	int             orig[MAXITEMS+1];
 	int             pos;
 	int             i;
-    int             error;
+    int             error = 0;
 
 	/* EXEC SQL WHENEVER SQLERROR GOTO sqlerr;*/
-	printf("Loading Stock Wid=%ld\n", w_id);
+	printf("Loading Stock Wid=%d\n", w_id);
 	s_w_id = w_id;
 
 	for (i = 0; i < MAXITEMS / 10; i++)
@@ -609,22 +601,19 @@ retry:
             s_data);
 
 		if (option_debug)
-			printf("SID = %ld, WID = %ld, Quan = %ld\n",
+			printf("SID = %d, WID = %d, Quan = %d\n",
 			       s_i_id, s_w_id, s_quantity);
 
 		if (!(s_i_id % 100)) {
 			printf(".");
 			fflush(stdout);
 			if (!(s_i_id % 5000))
-				printf(" %ld\n", s_i_id);
+				printf(" %d\n", s_i_id);
 		}
 	}
 
 	printf(" Stock Done.\n");
-out:
 	return error;
-sqlerr:
-    Error(0);
 }
 
 /*
@@ -633,10 +622,8 @@ sqlerr:
  * | ARGUMENTS |      w_id - warehouse id
  * +==================================================================
  */
-int 
-District(w_id, d_dump)
-	int             w_id;
-    struct psv_dump* d_dump;
+int
+District(int w_id, struct psv_dump* d_dump)
 {
 
 	int             d_id;
@@ -652,7 +639,7 @@ District(w_id, d_dump)
 	float           d_tax;
 	float           d_ytd;
 	int             d_next_o_id;
-    int             error;
+    int             error = 0;
 
 	/* EXEC SQL WHENEVER SQLERROR GOTO sqlerr;*/
 
@@ -690,15 +677,12 @@ retry:
             d_next_o_id);
 
 		if (option_debug)
-			printf("DID = %ld, WID = %ld, Name = %10s, Tax = %5.2f\n",
+			printf("DID = %d, WID = %d, Name = %10s, Tax = %5.2f\n",
 			       d_id, d_w_id, d_name, d_tax);
 
 	}
 
-out:
 	return error;
-sqlerr:
-	Error(0);
 }
 
 /*
@@ -708,12 +692,8 @@ sqlerr:
  * customer id |      d_id - district id |      w_id - warehouse id
  * +==================================================================
  */
-void 
-Customer(d_id, w_id, c_dump, h_dump)
-	int             d_id;
-	int             w_id;
-    struct psv_dump* c_dump;
-    struct psv_dump* h_dump;
+void
+Customer(int d_id, int w_id, struct psv_dump* c_dump, struct psv_dump* h_dump)
 {
 	int             c_id;
 	int             c_d_id;
@@ -743,7 +723,7 @@ Customer(d_id, w_id, c_dump, h_dump)
 
 	/*EXEC SQL WHENEVER SQLERROR GOTO sqlerr;*/
 
-	printf("Loading Customer for DID=%ld, WID=%ld\n", d_id, w_id);
+	printf("Loading Customer for DID=%d, WID=%d\n", d_id, w_id);
 
 retry:
     if (retried)
@@ -834,20 +814,16 @@ retry:
             h_data);
 
 		if (option_debug)
-			printf("CID = %ld, LST = %s, P# = %s\n",
+			printf("CID = %d, LST = %s, P# = %s\n",
 			       c_id, c_last, c_phone);
 		if (!(c_id % 100)) {
  			printf(".");
 			fflush(stdout);
 			if (!(c_id % 1000))
-				printf(" %ld\n", c_id);
+				printf(" %d\n", c_id);
 		}
 	}
 	printf("Customer Done.\n");
-
-	return;
-sqlerr:
-	Error(0);
 }
 
 /*
@@ -857,13 +833,11 @@ sqlerr:
  * warehouse id
  * +==================================================================
  */
-void 
-Orders(d_id, w_id, o_dump, n_dump, ol_dump)
-	int             d_id;
-    int             w_id;
-    struct psv_dump* o_dump;
-    struct psv_dump* n_dump;
-    struct psv_dump* ol_dump;
+void
+Orders(int d_id, int w_id,
+       struct psv_dump* o_dump,
+       struct psv_dump* n_dump,
+       struct psv_dump* ol_dump)
 {
 
 	int             o_id;
@@ -885,7 +859,7 @@ Orders(d_id, w_id, o_dump, n_dump, ol_dump)
 
 	/* EXEC SQL WHENEVER SQLERROR GOTO sqlerr; */
 
-	printf("Loading Orders for D=%ld, W= %ld\n", d_id, w_id);
+	printf("Loading Orders for D=%d, W= %d\n", d_id, w_id);
 	o_d_id = d_id;
 	o_w_id = w_id;
 retry:
@@ -945,7 +919,7 @@ retry:
 
 
 		if (option_debug)
-			printf("OID = %ld, CID = %ld, DID = %ld, WID = %ld\n",
+			printf("OID = %d, CID = %d, DID = %d, WID = %d\n",
 			       o_id, o_c_id, o_d_id, o_w_id);
 
 		for (ol = 1; ol <= o_ol_cnt; ol++) {
@@ -999,7 +973,7 @@ retry:
 			}
 
 			if (option_debug)
-				printf("OL = %ld, IID = %ld, QUAN = %ld, AMT = %8.2f\n",
+				printf("OL = %d, IID = %d, QUAN = %d, AMT = %8.2f\n",
 				       ol, ol_i_id, ol_quantity, ol_amount);
 
 		}
@@ -1008,13 +982,10 @@ retry:
 			fflush(stdout);
 
  			if (!(o_id % 1000))
-				printf(" %ld\n", o_id);
+				printf(" %d\n", o_id);
 		}
 	}
 	printf("Orders Done.\n");
-	return;
-sqlerr:
-	Error(0);
 }
 
 /*
@@ -1023,13 +994,8 @@ sqlerr:
  * ARGUMENTS
  * +==================================================================
  */
-void 
-MakeAddress(str1, str2, city, state, zip)
-	char           *str1;
-	char           *str2;
-	char           *city;
-	char           *state;
-	char           *zip;
+void
+MakeAddress(char *str1, char *str2, char *city, char *state, char *zip)
 {
 	str1[ MakeAlphaString(10, 20, str1) ] = 0;	/* Street 1 */
 	str2[ MakeAlphaString(10, 20, str2) ] = 0;	/* Street 2 */

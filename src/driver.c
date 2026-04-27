@@ -5,6 +5,8 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
+#include <unistd.h>
 #include <sys/times.h>
 #include <time.h>
 #include "tpc.h"      /* prototypes for misc. functions */
@@ -93,8 +95,8 @@ int driver (int t_num)
     /* The time where the next transaction can be executed for each terminal. */
     double wait_until[NUM_TERMINALS];
     int next_tx_type[NUM_TERMINALS];
-    int terminal;
-    time_t start_sec;
+    int terminal = 0;
+    time_t start_sec = 0;
 
     if(use_wait_time){
       clk = clock_gettime(CLOCK_MONOTONIC, &tbuf);

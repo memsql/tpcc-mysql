@@ -37,7 +37,8 @@ int RandomNumber (int min, int max)
 int NURand (unsigned A, unsigned x, unsigned y)
 {
 	static int first = 1;
-	unsigned C, C_255, C_1023, C_8191;
+	static unsigned C_255, C_1023, C_8191;
+	unsigned C;
 
 	if (first) {
 		C_255 = RandomNumber(0, 255);

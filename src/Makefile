@@ -10,7 +10,12 @@ INC=		-I. `mysql_config --include`
 
 #DEFS=		-DDEBUG
 
-CFLAGS=		-w -O3 -g
+CFLAGS=		-Wall -Wextra -Werror \
+		-Wno-unused-variable -Wno-unused-but-set-variable \
+		-Wno-unused-parameter -Wno-unused-label -Wno-unused-result \
+		-Wno-sign-compare -Wno-stringop-truncation \
+		-Wno-unused-function \
+		-O2 -g
 LDFLAGS=	-lpthread -lm
 
 TRANSACTIONS=	neword.o payment.o ordstat.o delivery.o slev.o

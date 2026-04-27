@@ -432,11 +432,11 @@ int main( int argc, char *argv[] )
       gettimeofday(&tv, NULL);
       seed = (tv.tv_sec ^ tv.tv_usec) * tv.tv_sec * tv.tv_usec ^ tv.tv_sec;
     }else{
-      read(fd, &seed, sizeof(seed));
+      if (read(fd, &seed, sizeof(seed)) != (ssize_t)sizeof(seed)) seed = (int)time(NULL);
       close(fd);
     }
   }else{
-    read(fd, &seed, sizeof(seed));
+    if (read(fd, &seed, sizeof(seed)) != (ssize_t)sizeof(seed)) seed = (int)time(NULL);
     close(fd);
   }
   SetSeed(seed);
@@ -463,7 +463,7 @@ int main( int argc, char *argv[] )
   }
 
   if (sb_percentile_init(&local_percentile, 100000, 1.0, 1e13))
-    return NULL;
+    return 1;
 
   /* set up threads */
 
@@ -668,12 +668,6 @@ int main( int argc, char *argv[] )
     / (float)((measure_time / PRINT_INTERVAL) * PRINT_INTERVAL);
   printf("                 %.3f TpmC\n",f);
   exit(0);
-
- sqlerr:
-  fprintf(stdout, "error at main\n");
-  error(ctx[i],0);
-  exit(1);
-
 }
 
 
@@ -698,7 +692,7 @@ void alarm_handler(int signum)
   percentile_val99 = sb_percentile_calculate(&local_percentile, 99);
   sb_percentile_reset(&local_percentile);
 //  printf("%4d, %d:%.3f|%.3f(%.3f), %d:%.3f|%.3f(%.3f), %d:%.3f|%.3f(%.3f), %d:%.3f|%.3f(%.3f), %d:%.3f|%.3f(%.3f)\n",
-  printf("%4d, trx: %d, 95%: %.3f, 99%: %.3f, max_rt: %.3f, %d|%.3f, %d|%.3f, %d|%.3f, %d|%.3f\n",
+  printf("%4d, trx: %d, 95%%: %.3f, 99%%: %.3f, max_rt: %.3f, %d|%.3f, %d|%.3f, %d|%.3f, %d|%.3f\n",
 	 time_count,
 	 ( s[0] + l[0] - prev_s[0] - prev_l[0] ), percentile_val,percentile_val99,
 	 (double)cur_max_rt[0],
@@ -788,12 +782,28 @@ int thread_main (thread_arg* arg)
   
   ctx[t_num] = mysql_init(NULL);
 
+  /* MySQL 8.x + managed TLS endpoints: require SSL and enable cleartext auth plugin
+   * (caching_sha2 over TLS). PREFERRED SSL + bool cleartext still hit SIGABRT in CI. */
+#if MYSQL_VERSION_ID >= 80000
+  if (ctx[t_num] && !is_local) {
+    unsigned int ssl_mode = SSL_MODE_REQUIRED;
+    char enable_cleartext = 1;
+    mysql_options(ctx[t_num], MYSQL_OPT_SSL_MODE, &ssl_mode);
+    mysql_options(ctx[t_num], MYSQL_ENABLE_CLEARTEXT_PLUGIN, &enable_cleartext);
+  }
+#endif
+
   if(is_local==1){
     /* exec sql connect :connect_string; */
     resp = mysql_real_connect(ctx[t_num], "localhost", db_user, db_password, db_string_full, port, db_socket, 0);
   }else{
     /* exec sql connect :connect_string USING :db_string; */
-    resp = mysql_real_connect(ctx[t_num], connect_string, db_user, db_password, db_string_full, port, db_socket, 0);
+#if MYSQL_VERSION_ID >= 80000
+    unsigned long client_flags = CLIENT_SSL;
+#else
+    unsigned long client_flags = 0;
+#endif
+    resp = mysql_real_connect(ctx[t_num], connect_string, db_user, db_password, db_string_full, port, db_socket, client_flags);
   }
 
   if(resp) {

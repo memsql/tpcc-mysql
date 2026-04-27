@@ -16,13 +16,13 @@ inline int parse_port(const char* from)
     return 3306;
   else
   {
-    const char* end= NULL;
+    char* end= NULL;
     int result= strtol(port+1,&end,10);
     if( (0 == *end) && (0 <= result) && (result <= 0xFFFF) )
       return result;
     else
     {
-      printf(stderr,"Incorrect port value: %s\n",end);
+      fprintf(stderr,"Incorrect port value: %s\n",end);
       exit(-1);
     }
   }
