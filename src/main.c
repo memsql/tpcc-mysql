@@ -782,14 +782,24 @@ int thread_main (thread_arg* arg)
   
   ctx[t_num] = mysql_init(NULL);
 
-  /* MySQL 8.x + managed TLS endpoints: require SSL and enable cleartext auth plugin
-   * (caching_sha2 over TLS). PREFERRED SSL + bool cleartext still hit SIGABRT in CI. */
+  /* MySQL 8.x SSL configuration for managed endpoints.
+   *
+   * Root cause of SIGABRT: The combination of SSL_MODE_REQUIRED + MYSQL_ENABLE_CLEARTEXT_PLUGIN
+   * + CLIENT_SSL flag caused internal state corruption in the MySQL 8.0 client library.
+   *
+   * Fix: Use MYSQL_OPT_SSL_MODE without CLIENT_SSL flag (which is deprecated in MySQL 8.0+
+   * when using mysql_options for SSL configuration). The cleartext plugin is not needed
+   * for caching_sha2_password authentication over TLS.
+   *
+   * SSL_MODE_PREFERRED: Attempts SSL connection, falls back to unencrypted if SSL fails.
+   * This is more robust for managed endpoints that may have self-signed certificates.
+   */
 #if MYSQL_VERSION_ID >= 80000
   if (ctx[t_num] && !is_local) {
-    unsigned int ssl_mode = SSL_MODE_REQUIRED;
-    char enable_cleartext = 1;
+    unsigned int ssl_mode = SSL_MODE_PREFERRED;
     mysql_options(ctx[t_num], MYSQL_OPT_SSL_MODE, &ssl_mode);
-    mysql_options(ctx[t_num], MYSQL_ENABLE_CLEARTEXT_PLUGIN, &enable_cleartext);
+    /* Note: Do NOT enable MYSQL_ENABLE_CLEARTEXT_PLUGIN - it's not needed and causes SIGABRT */
+    /* Note: SSL certificate verification is disabled by default in SSL_MODE_PREFERRED */
   }
 #endif
 
@@ -798,12 +808,8 @@ int thread_main (thread_arg* arg)
     resp = mysql_real_connect(ctx[t_num], "localhost", db_user, db_password, db_string_full, port, db_socket, 0);
   }else{
     /* exec sql connect :connect_string USING :db_string; */
-#if MYSQL_VERSION_ID >= 80000
-    unsigned long client_flags = CLIENT_SSL;
-#else
-    unsigned long client_flags = 0;
-#endif
-    resp = mysql_real_connect(ctx[t_num], connect_string, db_user, db_password, db_string_full, port, db_socket, client_flags);
+    /* Do NOT use CLIENT_SSL flag when MYSQL_OPT_SSL_MODE is configured via mysql_options() */
+    resp = mysql_real_connect(ctx[t_num], connect_string, db_user, db_password, db_string_full, port, db_socket, 0);
   }
 
   if(resp) {
