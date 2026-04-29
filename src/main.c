@@ -787,19 +787,23 @@ int thread_main (thread_arg* arg)
    * Root cause of SIGABRT: The combination of SSL_MODE_REQUIRED + MYSQL_ENABLE_CLEARTEXT_PLUGIN
    * + CLIENT_SSL flag caused internal state corruption in the MySQL 8.0 client library.
    *
-   * Fix: Use MYSQL_OPT_SSL_MODE without CLIENT_SSL flag (which is deprecated in MySQL 8.0+
-   * when using mysql_options for SSL configuration). The cleartext plugin is not needed
-   * for caching_sha2_password authentication over TLS.
+   * Root cause of hang: SSL_MODE_PREFERRED can hang indefinitely during SSL handshake when
+   * attempting fallback logic. Adding connection timeout prevents indefinite hangs.
    *
-   * SSL_MODE_PREFERRED: Attempts SSL connection, falls back to unencrypted if SSL fails.
-   * This is more robust for managed endpoints that may have self-signed certificates.
+   * Fix: Use SSL_MODE_REQUIRED with connection timeout, without CLIENT_SSL flag (which is
+   * deprecated in MySQL 8.0+ when using mysql_options for SSL configuration). The cleartext
+   * plugin is not needed for caching_sha2_password authentication over TLS.
+   *
+   * SSL_MODE_REQUIRED: Requires SSL connection and fails if SSL cannot be established.
+   * This is correct for managed endpoints which require SSL.
    */
 #if MYSQL_VERSION_ID >= 80000
   if (ctx[t_num] && !is_local) {
-    unsigned int ssl_mode = SSL_MODE_PREFERRED;
+    unsigned int ssl_mode = SSL_MODE_REQUIRED;
+    unsigned int connect_timeout = 30;  /* 30 second connection timeout */
     mysql_options(ctx[t_num], MYSQL_OPT_SSL_MODE, &ssl_mode);
+    mysql_options(ctx[t_num], MYSQL_OPT_CONNECT_TIMEOUT, &connect_timeout);
     /* Note: Do NOT enable MYSQL_ENABLE_CLEARTEXT_PLUGIN - it's not needed and causes SIGABRT */
-    /* Note: SSL certificate verification is disabled by default in SSL_MODE_PREFERRED */
   }
 #endif
 
