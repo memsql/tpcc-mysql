@@ -36,6 +36,7 @@ char db_host[DB_STRING_MAX];
 char db_socket[DB_STRING_MAX] = "";
 char db_user[DB_STRING_MAX];
 char db_password[DB_STRING_MAX];
+char db_default_auth[DB_STRING_MAX] = "";
 char report_file[DB_STRING_MAX]="";
 FILE *freport_file=NULL;
 char trx_file[DB_STRING_MAX]="";
@@ -174,7 +175,7 @@ int main( int argc, char *argv[] )
 
   /* Parse args */
 
-    while ( (c = getopt(argc, argv, "h:P:d:u:p:w:c:r:l:i:f:t:m:o:S:0:1:2:3:4:T:D:I:")) != -1) {
+    while ( (c = getopt(argc, argv, "h:P:d:u:p:w:c:r:l:i:f:t:m:o:S:0:1:2:3:4:T:D:I:a:")) != -1) {
         switch (c) {
         case 'h':
             printf ("option h with value '%s'\n", optarg);
@@ -268,8 +269,12 @@ int main( int argc, char *argv[] )
             printf ("option I with value '%s'\n", optarg);
             driver_id = atoi(optarg);
             break;
+	case 'a':
+	    printf ("option a with value '%s\n", optarg);
+            strncpy(db_default_auth, optarg, DB_STRING_MAX);
+            break;
         case '?':
-    	    printf("Usage: tpcc_start -h server_host -P port -d database_name -u mysql_user -p mysql_password -w warehouses -c connections -r warmup_time -l running_time -i report_interval -f report_file -t trx_file -T use_wait_time -D drivers -I driver_id\n");
+    	    printf("Usage: tpcc_start -h server_host -P port -d database_name -u mysql_user -p mysql_password -w warehouses -c connections -r warmup_time -l running_time -i report_interval -f report_file -t trx_file -T use_wait_time -D drivers -I driver_id -a default_auth\n");
             exit(0);
         default:
             printf ("?? getopt returned character code 0%o ??\n", c);
@@ -787,6 +792,10 @@ int thread_main (thread_arg* arg)
   // printf("Using schema: %s\n", db_string_full);
   
   ctx[t_num] = mysql_init(NULL);
+
+  if(strlen(db_default_auth) != 0) {
+        mysql_options(ctx[t_num], MYSQL_DEFAULT_AUTH, db_default_auth);
+  }
 
   if(is_local==1){
     /* exec sql connect :connect_string; */
