@@ -29,7 +29,9 @@ extern "C" {
 
 /* definitions for new order transaction */
 #define MAX_NUM_ITEMS 15
-#define MAX_ITEM_LEN  24
+/* Row size must accommodate i_name[25] (VARCHAR(24) + NUL) copied by
+ * strncpy(iname[idx], i_name, 25) in neword.c. */
+#define MAX_ITEM_LEN  25
 
 #define swap_int(a,b) {int tmp; tmp=a; a=b; b=tmp;}
 
